@@ -4,51 +4,81 @@
 ![Build Status](https://github.com/rmstorm/spacenav-ws/workflows/Test/badge.svg)
 ![License](https://img.shields.io/github/license/rmstorm/spacenav-ws)
 
-## Table of Contents
-
-- [About](#about)  
-- [Prerequisites](#prerequisites)  
-- [Usage](#usage)  
-- [Development](#development)  
-
 ## About
 
-**spacenav‑ws** is a tiny Python CLI that exposes your 3Dconnexion SpaceMouse over a secure WebSocket, so Onshape on Linux can finally consume it. Under the hood it reverse‑engineers the same traffic Onshape’s Windows client uses and proxies it into your browser.
+**spacenav‑ws** is a tiny Python CLI that exposes your 3Dconnexion SpaceMouse over a secure WebSocket, so Onshape on Linux can finally consume it. Under the hood it reverse‑engineers and re-implements the 3Dconnexion and Onshape interfaces.
 
 This lets you use [FreeSpacenav/spacenavd](https://github.com/FreeSpacenav/spacenavd) on Linux with Onshape.
 
 ## Prerequisites
 
-- [uv/uvx](https://docs.astral.sh/uv/getting-started/installation/) or another Python env manager.
-- A running instance of [spacenavd](https://github.com/FreeSpacenav/spacenavd)  
-- A modern browser (Chrome/Firefox) with a userscript manager (Tampermonkey/Greasemonkey)  
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) or a working repo-local `.venv`
+- a running instance of [spacenavd](https://github.com/FreeSpacenav/spacenavd)
+- a modern browser with a userscript manager (Tampermonkey/Greasemonkey)
 
-## Usage
+## Quick Start
 
-1. **Validate spacenavd**
-```bash
-uvx spacenav-ws@latest read-mouse
-# → should print spacemouse events
-```
-
-2. **Run the server and trust the cert**
-```bash
-uvx spacenav-ws@latest serve
-```
-Now open: [https://127.51.68.120:8181](https://127.51.68.120:8181). When prompted, add a browser exception for the self‑signed cert.
-
-3. **Install Tampermonkey and add the userscript**
-
-Install [Tampermonkey](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/?utm_source=addons.mozilla.org&utm_medium=referral&utm_content=search). After installing, click this [link](https://greasyfork.org/en/scripts/533516-onshape-3d-mouse-on-linux-in-page-patch) for one‑click install of the script.
-
-4. **Open an Onshape document and test your mouse!**
-
-## Developing
+1. Clone the repo, sync deps, generate the local cert, then start the server:
 
 ```bash
 git clone https://github.com/you/spacenav-ws.git
 cd spacenav-ws
+uv sync
+make certs HOST=127.51.68.120
 uv run spacenav-ws serve --hot-reload
 ```
 
-This starts the server with Uvicorn's `code watching / hot reload` feature enabled. When making changes the server restarts and any websocket state is nuked, however, Onshape should immediately reconnect automatically! This makes for a very smooth and fast iteration workflow.
+2. Open: [https://127.51.68.120:8181](https://127.51.68.120:8181) and trust the generated self-signed cert.
+   Check that there are events on that page when touching your spacemouse.
+
+3. Install Tampermonkey and add the platform-spoof userscript from
+[`additional/onshape-3d-mouse-linux.user.js`](additional/onshape-3d-mouse-linux.user.js),
+then open an Onshape document.
+
+## Controls
+
+- mode button `0`: toggle `object` / `target-camera`
+- mode button `1`: cycle `all` -> `rotation-only` -> `translation-only` -> `all`
+
+## Common Pitfalls
+
+- `spacenavd` should have a sensible dead-zone, but no extra gains/sensitivity scaling and no `bnact*` button actions
+- `make certs` is non-destructive and refuses to overwrite an existing cert/key pair
+- generated certs live under [`src/spacenav_ws/data/certs`](src/spacenav_ws/data/certs)
+- the raw remap is configuration, not a public standard
+
+To override the raw-axis remap:
+
+```bash
+uv run spacenav-ws serve --hot-reload --remap XYzUWV
+```
+
+The remap string is six characters. The first three choose model translation
+`x y z`, the last three choose model rotation `u v w`, from the six raw axes
+`x y z u v w`. Uppercase means positive, lowercase means negative, and each of
+`x y z u v w` must appear exactly once.
+
+To validate raw SpaceMouse input:
+
+```bash
+uv run spacenav-ws read-mouse
+```
+
+## Development
+
+```bash
+uv sync
+./.venv/bin/python -m pytest -q
+```
+
+Direct [`.venv`](.venv) usage also works for serving:
+
+```bash
+make certs HOST=127.51.68.120
+./.venv/bin/python -m spacenav_ws.main serve --hot-reload
+```
+
+Reference docs:
+
+- [docs/navigation-model.md](docs/navigation-model.md): mathematical model
+- [docs/onshape-observations.md](docs/onshape-observations.md): Onshape interface specification

@@ -1,55 +1,30 @@
 import asyncio
 import logging
+import os
 import socket
-import struct
-from dataclasses import dataclass
-from typing import List
+import sys
 
-SPACENAV_SOCKET_PATH = "/var/run/spnav.sock"
+from spacenav_ws.raw_input import PACKET_SIZE, decode_packet
+
+SPACENAV_SOCKET_PATH = os.environ.get("SPACENAV_SOCKET_PATH", "/var/run/spnav.sock")
 
 
 def get_sync_spacenav_socket():
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(SPACENAV_SOCKET_PATH)
-    return sock
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SPACENAV_SOCKET_PATH)
+    return s
 
 
 async def get_async_spacenav_socket_reader() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     try:
         return await asyncio.open_unix_connection(SPACENAV_SOCKET_PATH)
     except (FileNotFoundError, ConnectionRefusedError):
-        logging.exception("Space mouse not found!")
-        exit(1)
-
-
-@dataclass
-class MotionEvent:
-    x: int
-    y: int
-    z: int
-    pitch: int
-    yaw: int
-    roll: int
-    period: int
-    type: str = "mtn"
-
-
-@dataclass
-class ButtonEvent:
-    button_id: int
-    pressed: bool
-    type: str = "btn"
-
-
-def from_message(message: List[int]) -> MotionEvent | ButtonEvent:
-    if message[0] == 0:
-        return MotionEvent(x=message[1], z=message[2], y=message[3], pitch=message[4], yaw=message[5], roll=message[6], period=message[7])
-    return ButtonEvent(button_id=message[1], pressed=True if message[0] == 1 else False)
+        logging.error("Space mouse not found at %s", SPACENAV_SOCKET_PATH)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     sock = get_sync_spacenav_socket()
     while True:
-        chunk = sock.recv(32)
-        nums = struct.unpack("iiiiiiii", chunk)
-        print(from_message(list(nums)))
+        chunk = sock.recv(PACKET_SIZE)
+        print(decode_packet(chunk))

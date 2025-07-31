@@ -2,17 +2,23 @@
 
 import asyncio
 import logging
+import os
 import random
 import string
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import IntEnum
-from types import CoroutineType
-from typing import Any, ClassVar, Dict, NamedTuple, Optional, Type, Callable
+from typing import Any, ClassVar, Dict, NamedTuple, Optional, Type
 
 from fastapi import WebSocket
 
 
-def _rand_id(len) -> str:
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=len))
+WIRE_LOG_WAMP = os.environ.get("SPACENAV_WS_WIRE_LOG", "0") == "1"
+DEFAULT_RPC_TIMEOUT_S = 2.0
+
+
+def _rand_id(width: int) -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=width))
 
 
 class WAMP_MSG_TYPE(IntEnum):
@@ -92,6 +98,29 @@ class Event(NamedTuple("EventBase", [("topic", str), ("payload", Any)]), WampMes
     MSG_TYPE: ClassVar[WAMP_MSG_TYPE] = WAMP_MSG_TYPE.EVENT
 
 
+class WampError(RuntimeError):
+    pass
+
+
+class WampClosedError(WampError):
+    pass
+
+
+class WampRpcTimeoutError(WampError):
+    pass
+
+
+class WampRpcRemoteError(WampError):
+    pass
+
+
+@dataclass
+class InFlightRpc:
+    gate: asyncio.Event
+    result: Any = None
+    error: Any = None
+
+
 class WampProtocol:
     """
     https://wamp-proto.org/wamp_bp_latest_ietf.html#name-session-establishment Offcourse nothing is compliant and the Onshape client doesn't even send a HELLO lol.
@@ -101,24 +130,28 @@ class WampProtocol:
         self._socket = websocket
         self._server_id = "snbridge v0.0.1"
         self._session_id = _rand_id(16)
+        self._send_lock = asyncio.Lock()
 
         self.prefixes = {}
-        self.call_handlers: dict[str, Callable[..., CoroutineType[Any, Any, None]]] = {}
-        self.subscribe_handlers: dict[str, Callable[[Subscribe], CoroutineType[Any, Any, None]]] = {}
+        self.call_handlers: dict[str, Callable[..., Awaitable[Any]]] = {}
+        self.subscribe_handlers: dict[str, Callable[[Subscribe], Awaitable[Any]]] = {}
 
     async def begin(self):
         await self._socket.accept(subprotocol="wamp")
         await self.send_message(Welcome(self._session_id, 1, self._server_id))
 
     async def send_message(self, msg: WampMessage):
-        logging.debug(f"sending WAMP message: {msg=}")
-        await self._socket.send_json(msg.serialize_with_msg_id())
+        if WIRE_LOG_WAMP:
+            logging.debug(f"sending WAMP message: {msg=}")
+        async with self._send_lock:
+            await self._socket.send_json(msg.serialize_with_msg_id())
 
     async def next_message(self) -> WampMessage:
         data = await self._socket.receive_json()
         msg_type = WAMP_MSG_TYPE(data[0])
         msg = WampMessage.REGISTRY[msg_type](*data[1:])
-        logging.debug(f"received WAMP message: {msg=}")
+        if WIRE_LOG_WAMP:
+            logging.debug(f"received WAMP message: {msg=}")
         return msg
 
     async def run_message_handler(self, msg: WampMessage):
@@ -159,50 +192,82 @@ class WampProtocol:
 
     def resolve(self, uri: str) -> str:
         """Resolve any registered prefixes in the uri"""
+        if ":" not in uri:
+            return uri
         prefix, res = uri.split(":", 1)
         return self.prefixes.get(prefix, "") + res
 
 
 class WampSession:
-    """I'm honestly not even sure I should be keeping track of those rpcs? Maybe this whole stateHandler on top the WampProtocol is useless?"""
-
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, rpc_timeout_s: float = DEFAULT_RPC_TIMEOUT_S):
         self.wamp = WampProtocol(websocket)
+        self.rpc_timeout_s = rpc_timeout_s
 
-        self.in_flight_rpcs: dict[str, dict] = {}
+        self.in_flight_rpcs: dict[str, InFlightRpc] = {}
+        self.closed = False
+        self.close_error: BaseException | None = None
 
         self.wamp.handle_callresult = self.handle_callresult
         self.wamp.handle_callerror = self.handle_callerror
 
+    async def close(self, exc: BaseException | None = None):
+        if self.closed:
+            return
+        self.closed = True
+        self.close_error = exc
+        error = exc or WampClosedError("WAMP session closed")
+        for rpc in self.in_flight_rpcs.values():
+            rpc.error = error
+            rpc.gate.set()
+
     async def start_wamp_message_stream(self):
-        while True:
-            msg = await self.wamp.next_message()
-            # They're all like.. interleaved.. have to create one task per message with the current approach.. Not very nice because it means errors don't bubble up
-            asyncio.create_task(self.wamp.run_message_handler(msg))
+        try:
+            while True:
+                msg = await self.wamp.next_message()
+                await self.wamp.run_message_handler(msg)
+        except BaseException as exc:
+            await self.close(exc)
+            raise
 
     async def client_rpc(self, controller_uri: str, method: str, *args):
-        """This function lives for the duration of the rpc. It registers the inflight request and waits for either handle_callresult or handle_callerror to finalize the rpc.."""
+        if self.closed:
+            raise WampClosedError("WAMP session closed") from self.close_error
+
         call = Call.create(method, "", *args)
-        # Launch RPC in background as task. I guess? This is pretty unclear to me? Why are the calls wrapped in Events? Because of the Subscription?
-        await self.wamp.send_message(Event(controller_uri, call.serialize_with_msg_id()))
-
-        rpc = {"gate": asyncio.Event(), "result": None, "error": None}
-
+        rpc = InFlightRpc(gate=asyncio.Event())
         self.in_flight_rpcs[call.call_id] = rpc
-        await rpc["gate"].wait()
-        del self.in_flight_rpcs[call.call_id]
+        try:
+            await self.wamp.send_message(Event(controller_uri, call.serialize_with_msg_id()))
+            try:
+                await asyncio.wait_for(rpc.gate.wait(), timeout=self.rpc_timeout_s)
+            except TimeoutError as exc:
+                rpc.error = WampRpcTimeoutError(f"WAMP RPC timed out after {self.rpc_timeout_s}s: {call.proc_uri}")
+                raise rpc.error from exc
 
-        if rpc["error"] is not None:
-            logging.error('Encountered error "%s" during %s', rpc["error"], call)
-            raise ValueError(rpc["error"])
-        return rpc["result"]
+            if rpc.error is not None:
+                if isinstance(rpc.error, BaseException):
+                    raise rpc.error
+                raise WampRpcRemoteError(str(rpc.error))
+            return rpc.result
+        except BaseException as exc:
+            if not self.closed and not isinstance(exc, (WampRpcRemoteError, WampRpcTimeoutError)):
+                await self.close(exc)
+            raise
+        finally:
+            self.in_flight_rpcs.pop(call.call_id, None)
 
     async def handle_callresult(self, msg: CallResult):
-        rpc = self.in_flight_rpcs[msg.call_id]
-        rpc["result"] = msg.result
-        rpc["gate"].set()
+        rpc = self.in_flight_rpcs.get(msg.call_id)
+        if rpc is None:
+            logging.warning("Ignoring unexpected WAMP callresult for %s", msg.call_id)
+            return
+        rpc.result = msg.result
+        rpc.gate.set()
 
     async def handle_callerror(self, msg: CallError):
-        rpc = self.in_flight_rpcs[msg.call_id]
-        rpc["error"] = (msg.error_uri, msg.desc)
-        rpc["gate"].set()
+        rpc = self.in_flight_rpcs.get(msg.call_id)
+        if rpc is None:
+            logging.warning("Ignoring unexpected WAMP callerror for %s", msg.call_id)
+            return
+        rpc.error = WampRpcRemoteError(f"{msg.error_uri}: {msg.desc}")
+        rpc.gate.set()
