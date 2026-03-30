@@ -7,5 +7,3 @@ __pycache__/
 /.benchmarks/
 /build/
 /dist/
-/src/spacenav_ws/data/certs/*
-!src/spacenav_ws/data/certs/.gitkeep

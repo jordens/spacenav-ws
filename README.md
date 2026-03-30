@@ -1,43 +1,44 @@
 # spacenav-ws
 
 `spacenav-ws` exposes a local SpaceMouse to browser clients over TLS WebSocket.
-The current target is Onshape on Linux via `spacenavd`.
+The main target is Onshape on Linux via `spacenavd`.
 
-## Requirements
+## Install
 
-- `uv` or a repo-local `.venv`
-- running `spacenavd`
-- a browser with a userscript manager
+```bash
+uv sync
+```
+
+Requirements:
+
+- Linux with `spacenavd` running
+- OpenSSL available if you want managed self-signed certs
+- a browser with a userscript manager for Onshape
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/you/spacenav-ws.git
-cd spacenav-ws
-uv sync
-make certs HOST=127.51.68.120
-uv run spacenav-ws serve --hot-reload
+uv run spacenav-ws serve --host 127.51.68.120 --port 8181
 ```
 
-Then:
+This lazily creates or reuses managed certs in the default state dir:
+`~/.local/state/spacenav-ws/` for normal user runs, or `$XDG_STATE_HOME/spacenav-ws/`
+if `XDG_STATE_HOME` is set.
 
-1. Open `https://127.51.68.120:8181` and trust the generated cert.
-2. Verify motion events appear when the SpaceMouse moves.
-3. Install [`additional/onshape-3d-mouse-linux.user.js`](additional/onshape-3d-mouse-linux.user.js).
-4. Open an Onshape document.
+Then open `https://127.51.68.120:8181` and:
+
+1. Trust the generated cert.
+2. Install the Onshape userscript from the landing page.
+3. Open an Onshape document.
+4. Keep that browser tab focused.
+5. Move the SpaceMouse.
 
 ## Controls
 
 - button `0`: toggle `object` / `target-camera`
 - button `1`: cycle `all` -> `rotation-only` -> `translation-only` -> `all`
 
-## CLI
-
-Start the bridge:
-
-```bash
-uv run spacenav-ws serve --hot-reload
-```
+## Commands
 
 Read raw SpaceMouse packets:
 
@@ -48,7 +49,13 @@ uv run spacenav-ws read-mouse
 Override the raw-axis remap:
 
 ```bash
-uv run spacenav-ws serve --hot-reload --remap XYzUWV
+uv run spacenav-ws serve --remap XYzUWV
+```
+
+Write or reuse managed TLS material:
+
+```bash
+uv run spacenav-ws cert ensure --host 127.51.68.120
 ```
 
 `remap` is six characters:
@@ -59,17 +66,33 @@ uv run spacenav-ws serve --hot-reload --remap XYzUWV
 - lowercase: negative raw axis
 - `x y z u v w` must each appear exactly once
 
-## Notes
+## Certs And State
 
-- generated certs live in [`src/spacenav_ws/data/certs`](src/spacenav_ws/data/certs)
-- `make certs` will not overwrite an existing cert/key pair
-- keep `spacenavd` dead-zone/button handling sane; avoid extra gain scaling and `bnact*` remaps
+- Unprivileged runs default to the user state dir, usually `~/.local/state/spacenav-ws/`.
+- Root or system-service runs default to `/var/lib/spacenav-ws/`.
+- The preferred normal-user flow is to let `serve` lazily create and reuse certs in that default user state dir.
+- Override either case with `--state-root` or `SPACENAV_WS_STATE_DIR`.
+- Pass `--cert-file` and `--key-file` if you do not want managed self-signed certs.
 
-## Development
+## systemd
+
+If you want a persistent user service, start from
+[`docs/spacenav-ws.service`](docs/spacenav-ws.service).
+
+Copy it to `~/.config/systemd/user/spacenav-ws.service`, replace
+`/path/to/repo` with your checkout path, then run:
 
 ```bash
-uv sync
-./.venv/bin/python -m pytest -q
+systemctl --user daemon-reload
+systemctl --user enable --now spacenav-ws.service
+```
+
+Keep `spacenavd` dead-zone/button handling sane; avoid extra gain scaling and `bnact*` remaps.
+
+Tests:
+
+```bash
+uv run pytest -q
 ```
 
 ## Reference

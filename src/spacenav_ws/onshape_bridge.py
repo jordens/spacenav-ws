@@ -9,9 +9,8 @@ from spacenav_ws.types import CameraState, NavigationState
 from spacenav_ws.wamp import WampSession
 
 
-def _center_from_extents(extents: list[float]) -> np.ndarray:
-    bounds = np.asarray(extents, dtype=float)
-    return (bounds[:3] + bounds[3:6]) * 0.5
+class PivotUnavailableError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -35,15 +34,10 @@ class OnshapeBridge:
         return NavigationState(camera=camera, pivot=pivot)
 
     async def read_pivot(self, camera: CameraState) -> np.ndarray:
-        for key, size in (("pivot.position", 3), ("selection.extents", 6), ("model.extents", 6)):
-            value = await self._try_read_property(key)
-            if isinstance(value, list) and len(value) >= size:
-                return np.asarray(value[:3], dtype=float) if size == 3 else _center_from_extents(value)
-
-        distance = 10.0
-        if camera.extents is not None:
-            distance = max(camera.extents[3] - camera.extents[0], 1.0)
-        return camera.position - camera.rotation[:, 2] * distance
+        value = await self._try_read_property("pivot.position")
+        if isinstance(value, list) and len(value) >= 3:
+            return np.asarray(value[:3], dtype=float)
+        raise PivotUnavailableError("Onshape bridge did not provide pivot.position")
 
     async def write_navigation_state(self, state: NavigationState, previous_state: NavigationState | None = None):
         await self.session.client_rpc(self.controller_uri, "self:update", "view.affine", camera_state_to_affine(state.camera))

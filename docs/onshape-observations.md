@@ -28,11 +28,6 @@ Not specified here:
 - `view.frustum`
 - `pivot.position`
 
-Optional fallback reads used when `pivot.position` is absent:
-
-- `selection.extents`
-- `model.extents`
-
 ## `view.affine`
 
 `view.affine` is `camera.getFrame()`.
@@ -109,6 +104,7 @@ Requirements:
 
 - use it as the primary center of rotation
 - do not substitute `view.target`
+- if it is absent, do not synthesize an arbitrary fallback pivot; skip motion instead
 
 Observed behavior:
 

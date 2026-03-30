@@ -7,7 +7,7 @@ from time import monotonic
 from typing import Any
 
 from spacenav_ws.navigation import NavigationConfig, apply_motion_with_mode, motion_activity
-from spacenav_ws.onshape_bridge import OnshapeBridge
+from spacenav_ws.onshape_bridge import OnshapeBridge, PivotUnavailableError
 from spacenav_ws.raw_input import PACKET_SIZE, decode_packet
 from spacenav_ws.types import ButtonSample, MotionSample, MotionAxesMode, NavigationMode
 from spacenav_ws.wamp import Call, CallResult, Prefix, Subscribe, WampSession
@@ -49,11 +49,11 @@ class Controller:
         self.mode = NavigationMode.OBJECT
         self.axes_mode = MotionAxesMode.ALL
         self.session.wamp.subscribe_handlers[self.controller_uri] = self.subscribe
-        self.session.wamp.call_handlers["wss://127.51.68.120/3dconnexion#update"] = self.client_update
+        self.session.wamp.call_handlers[self.session.wamp.resolve("3dx_rpc:update")] = self.client_update
 
     @property
     def controller_uri(self) -> str:
-        return f"wss://127.51.68.120/3dconnexion3dcontroller/{self.id}"
+        return self.session.wamp.resolve(f"3dconnexion:3dcontroller/{self.id}")
 
     def is_supported_client(self) -> bool:
         return self.client_metadata.get("name") in SUPPORTED_CLIENT_NAMES
@@ -132,7 +132,12 @@ class Controller:
             self.motion_active = True
 
         logging.debug("Reading current navigation state")
-        current_state = await self.bridge.read_navigation_state()
+        try:
+            current_state = await self.bridge.read_navigation_state()
+        except PivotUnavailableError as exc:
+            logging.warning(str(exc))
+            await self._stop_motion()
+            return
         # spacenavd's motion.period is time since the previous emitted motion event.
         # After idle silence, the first non-zero sample can carry a large period that
         # should not be integrated as active motion. Bootstrap the gesture with dt=0.

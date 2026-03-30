@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 import struct
 from typing import Union
 
 from spacenav_ws.types import ButtonSample, MotionSample
 
+SPACENAV_SOCKET_PATH = os.environ.get("SPACENAV_SOCKET_PATH", "/var/run/spnav.sock")
+
 PACKET_FORMAT = "iiiiiiii"
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
 
 RawInputEvent = Union[MotionSample, ButtonSample]
+
+
+class SpacenavConnectionError(RuntimeError):
+    pass
+
+
+async def open_spacenav_connection() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    try:
+        return await asyncio.open_unix_connection(SPACENAV_SOCKET_PATH)
+    except (FileNotFoundError, ConnectionRefusedError) as exc:
+        message = f"Space mouse not found at {SPACENAV_SOCKET_PATH}"
+        logging.error(message)
+        raise SpacenavConnectionError(message) from exc
 
 
 def decode_packet(packet: bytes) -> RawInputEvent:
