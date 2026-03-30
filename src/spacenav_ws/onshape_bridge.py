@@ -19,7 +19,7 @@ class OnshapeBridge:
     session: WampSession
     controller_uri: str
 
-    async def try_remote_read(self, *args):
+    async def _try_read_property(self, *args):
         try:
             return await self.session.client_rpc(self.controller_uri, "self:read", *args)
         except Exception:
@@ -28,15 +28,15 @@ class OnshapeBridge:
     async def read_navigation_state(self) -> NavigationState:
         perspective = bool(await self.session.client_rpc(self.controller_uri, "self:read", "view.perspective"))
         affine = await self.session.client_rpc(self.controller_uri, "self:read", "view.affine")
-        extents = await self.try_remote_read("view.extents")
-        frustum = await self.try_remote_read("view.frustum")
+        extents = await self._try_read_property("view.extents")
+        frustum = await self._try_read_property("view.frustum")
         camera = camera_state_from_affine(affine, perspective=perspective, extents=extents, frustum=frustum)
         pivot = await self.read_pivot(camera)
         return NavigationState(camera=camera, pivot=pivot)
 
     async def read_pivot(self, camera: CameraState) -> np.ndarray:
         for key, size in (("pivot.position", 3), ("selection.extents", 6), ("model.extents", 6)):
-            value = await self.try_remote_read(key)
+            value = await self._try_read_property(key)
             if isinstance(value, list) and len(value) >= size:
                 return np.asarray(value[:3], dtype=float) if size == 3 else _center_from_extents(value)
 
@@ -56,8 +56,3 @@ class OnshapeBridge:
 
     async def set_motion(self, active: bool):
         await self.session.client_rpc(self.controller_uri, "self:update", "motion", active)
-
-    async def reset_view(self):
-        front_view = await self.try_remote_read("views.front")
-        if front_view is not None:
-            await self.session.client_rpc(self.controller_uri, "self:update", "view.affine", front_view)

@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 from spacenav_ws.controller import create_mouse_controller
 from spacenav_ws.navigation import DEFAULT_REMAP, NavigationConfig, parse_remap
 from spacenav_ws.raw_input import PACKET_SIZE, decode_packet
-from spacenav_ws.spacenav import get_async_spacenav_socket_reader
+from spacenav_ws.spacenav import open_spacenav_connection
 from spacenav_ws.wamp import WampSession
 
 LOG_LEVEL = os.environ.get("SPACENAV_WS_LOG_LEVEL", "INFO").upper()
@@ -57,45 +57,45 @@ HOMEPAGE_HTML = """
 
 
 @app.get("/3dconnexion/nlproxy")
-async def get_info():
+async def nlproxy_info():
     """HTTP info endpoint for the 3Dconnexion client. Returns which port the WAMP bridge will use and its version."""
     return {"port": 8181, "version": "1.4.8.21486"}
 
 
 @app.get("/")
-def homepage():
-    """Tiny bit of HTML that displays mouse movement data"""
+def smoke_test_page():
+    """Tiny bit of HTML that displays mouse movement data."""
     return HTMLResponse(content=HOMEPAGE_HTML, status_code=200)
 
 
-async def get_mouse_event_stream():
-    reader, _ = await get_async_spacenav_socket_reader()
+async def iter_mouse_events():
+    reader, _ = await open_spacenav_connection()
     while True:
         yield f"data: {decode_packet(await reader.readexactly(PACKET_SIZE))}\n\n"
 
 
 @app.get("/events")
-async def event_stream():
-    """Stream mouse motion data"""
-    return StreamingResponse(get_mouse_event_stream(), media_type="text/event-stream")
+async def mouse_event_stream():
+    """Stream mouse motion data."""
+    return StreamingResponse(iter_mouse_events(), media_type="text/event-stream")
 
 
 @app.websocket("/")
-async def nlproxy(ws: WebSocket):
-    """This is the websocket that webapplications should connect to for mouse data"""
+async def bridge_websocket(ws: WebSocket):
+    """WebSocket endpoint for browser clients that speak the nlproxy WAMP protocol."""
     wamp_session = WampSession(ws)
-    spacenav_reader, _ = await get_async_spacenav_socket_reader()
+    spacenav_reader, _ = await open_spacenav_connection()
     remap = os.environ.get("SPACENAV_WS_REMAP", DEFAULT_REMAP)
-    ctrl = await create_mouse_controller(wamp_session, spacenav_reader, nav_config=NavigationConfig(remap=remap))
+    controller = await create_mouse_controller(wamp_session, spacenav_reader, nav_config=NavigationConfig(remap=remap))
     # TODO, better error handling then just dropping the websocket disconnect on the floor?
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(ctrl.start_mouse_event_stream(), name="mouse")
-        tg.create_task(ctrl.wamp_state_handler.start_wamp_message_stream(), name="wamp")
+        tg.create_task(controller.start_mouse_event_stream(), name="mouse")
+        tg.create_task(controller.session.start_wamp_message_stream(), name="wamp")
 
 
 @cli.command()
 def serve(host: str = "127.51.68.120", port: int = 8181, hot_reload: bool = False, remap: str = DEFAULT_REMAP):
-    """Start the server that sends spacenav to browser based applications like onshape"""
+    """Start the server that sends spacenav to browser-based applications like Onshape."""
     parse_remap(remap)
     os.environ["SPACENAV_WS_REMAP"] = remap
     cert_file = CERT_DIR / f"{host}.crt"
@@ -105,7 +105,7 @@ def serve(host: str = "127.51.68.120", port: int = 8181, hot_reload: bool = Fals
             f"Missing TLS certs for {host}. Run: make certs HOST={host}",
             param_hint="host",
         )
-    logging.warning(f"Navigate to: https://{host}:{port} You should be prompted to add the cert as an exception to your browser!!")
+    logging.warning("Navigate to: https://%s:%s You should be prompted to add the cert as an exception to your browser.", host, port)
     uvicorn.run(
         "spacenav_ws.main:app",
         host=host,
@@ -118,16 +118,16 @@ def serve(host: str = "127.51.68.120", port: int = 8181, hot_reload: bool = Fals
     )
 
 
-@cli.command()
-def read_mouse():
-    """This echos the output from the spacenav socket, usefull for checking if things are working under the hood"""
+@cli.command("read-mouse")
+def read_mouse_events():
+    """Echo raw decoded events from the spacenav socket."""
 
-    async def read_mouse_stream():
+    async def log_mouse_stream():
         logging.info("Start moving your mouse!")
-        async for event in get_mouse_event_stream():
+        async for event in iter_mouse_events():
             logging.info(event.strip())
 
-    asyncio.run(read_mouse_stream())
+    asyncio.run(log_mouse_stream())
 
 
 if __name__ == "__main__":

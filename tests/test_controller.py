@@ -23,7 +23,7 @@ def make_controller(client_metadata=None):
     session = WampSession(DummyWebSocket())
     return Controller(
         reader=reader,
-        wamp_state_handler=session,
+        session=session,
         client_metadata=client_metadata or {"name": "Onshape", "version": 0.6},
     )
 

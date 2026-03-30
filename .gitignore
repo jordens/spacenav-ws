@@ -3,6 +3,8 @@ __pycache__/
 /.venv/
 /.pytest_cache/
 /.local/
+/.tmp-onshape-debug-ext/
+/.benchmarks/
 /build/
 /dist/
 /src/spacenav_ws/data/certs/*

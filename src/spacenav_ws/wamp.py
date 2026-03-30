@@ -15,7 +15,7 @@ WIRE_LOG_WAMP = os.environ.get("SPACENAV_WS_WIRE_LOG", "0") == "1"
 DEFAULT_RPC_TIMEOUT_S = 2.0
 
 
-def _rand_id(width: int) -> str:
+def _generate_id(width: int) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(random.choices(alphabet, k=width))
 
@@ -76,7 +76,7 @@ class Call(WampMessage):
 
     @classmethod
     def create(cls, proc_uri: str, *args: Any) -> Call:
-        return cls(_rand_id(18), proc_uri, *args)
+        return cls(_generate_id(18), proc_uri, *args)
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class Event(WampMessage):
     MSG_TYPE: ClassVar[WampMsgType] = WampMsgType.EVENT
 
 
-MESSAGE_TYPES: dict[WampMsgType, type[WampMessage]] = {
+MESSAGE_TYPES_BY_ID: dict[WampMsgType, type[WampMessage]] = {
     Welcome.MSG_TYPE: Welcome,
     Prefix.MSG_TYPE: Prefix,
     Call.MSG_TYPE: Call,
@@ -140,7 +140,7 @@ class WampRpcRemoteError(WampError):
 
 
 @dataclass
-class InFlightRpc:
+class PendingRpc:
     gate: asyncio.Event
     result: Any = None
     error: BaseException | None = None
@@ -154,7 +154,7 @@ def _decode_message(data: Any) -> WampMessage:
     except ValueError as exc:
         raise ValueError(f"Unknown WAMP message type: {data[0]!r}") from exc
 
-    cls = MESSAGE_TYPES.get(msg_type)
+    cls = MESSAGE_TYPES_BY_ID.get(msg_type)
     if cls is None:
         raise ValueError(f"Unsupported WAMP message type: {msg_type!r}")
     return cls(*data[1:])
@@ -164,7 +164,7 @@ class WampProtocol:
     def __init__(self, websocket: WebSocket):
         self._socket = websocket
         self._server_id = "snbridge v0.0.1"
-        self._session_id = _rand_id(16)
+        self._session_id = _generate_id(16)
         self._send_lock = asyncio.Lock()
         self.prefixes: dict[str, str] = {}
         self.call_handlers: dict[str, Any] = {}
@@ -236,7 +236,7 @@ class WampSession:
     def __init__(self, websocket: WebSocket, rpc_timeout_s: float = DEFAULT_RPC_TIMEOUT_S):
         self.wamp = WampProtocol(websocket)
         self.rpc_timeout_s = rpc_timeout_s
-        self.in_flight_rpcs: dict[str, InFlightRpc] = {}
+        self.pending_rpcs: dict[str, PendingRpc] = {}
         self.closed = False
         self.close_error: BaseException | None = None
         self.wamp.handle_callresult = self.handle_callresult
@@ -248,7 +248,7 @@ class WampSession:
         self.closed = True
         self.close_error = exc
         error = exc or WampClosedError("WAMP session closed")
-        for rpc in self.in_flight_rpcs.values():
+        for rpc in self.pending_rpcs.values():
             rpc.error = error
             rpc.gate.set()
 
@@ -265,8 +265,8 @@ class WampSession:
             raise WampClosedError("WAMP session closed") from self.close_error
 
         call = Call.create(method, "", *args)
-        rpc = InFlightRpc(gate=asyncio.Event())
-        self.in_flight_rpcs[call.call_id] = rpc
+        rpc = PendingRpc(gate=asyncio.Event())
+        self.pending_rpcs[call.call_id] = rpc
         try:
             await self.wamp.send_message(Event(controller_uri, call.serialize_with_msg_id()))
             try:
@@ -282,10 +282,10 @@ class WampSession:
                 await self.close(exc)
             raise
         finally:
-            self.in_flight_rpcs.pop(call.call_id, None)
+            self.pending_rpcs.pop(call.call_id, None)
 
     async def handle_callresult(self, msg: CallResult):
-        rpc = self.in_flight_rpcs.get(msg.call_id)
+        rpc = self.pending_rpcs.get(msg.call_id)
         if rpc is None:
             logging.warning("Ignoring unexpected WAMP callresult for %s", msg.call_id)
             return
@@ -293,7 +293,7 @@ class WampSession:
         rpc.gate.set()
 
     async def handle_callerror(self, msg: CallError):
-        rpc = self.in_flight_rpcs.get(msg.call_id)
+        rpc = self.pending_rpcs.get(msg.call_id)
         if rpc is None:
             logging.warning("Ignoring unexpected WAMP callerror for %s", msg.call_id)
             return

@@ -49,7 +49,7 @@ def test_client_rpc_surfaces_remote_error():
         session = WampSession(ws, rpc_timeout_s=0.1)
         task = asyncio.create_task(session.client_rpc("controller", "self:read", "view.affine"))
         await asyncio.sleep(0)
-        call_id = next(iter(session.in_flight_rpcs))
+        call_id = next(iter(session.pending_rpcs))
         await session.handle_callerror(CallError(call_id, "wamp.error.not_found", "missing"))
         with pytest.raises(WampRpcRemoteError):
             await task
@@ -63,7 +63,7 @@ def test_client_rpc_returns_callresult():
         session = WampSession(ws, rpc_timeout_s=0.1)
         task = asyncio.create_task(session.client_rpc("controller", "self:read", "view.affine"))
         await asyncio.sleep(0)
-        call_id = next(iter(session.in_flight_rpcs))
+        call_id = next(iter(session.pending_rpcs))
         await session.handle_callresult(CallResult(call_id, [1, 2, 3]))
         assert await task == [1, 2, 3]
         assert len(ws.sent) == 1
