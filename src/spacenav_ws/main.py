@@ -18,8 +18,11 @@ from spacenav_ws.raw_input import PACKET_SIZE, SpacenavConnectionError, decode_p
 from spacenav_ws.runtime import public_port, set_public_endpoint, set_state_dir_override, state_dir
 from spacenav_ws.tls import ensure_self_signed_cert, resolve_tls_paths
 from spacenav_ws.wamp import WampSession
+from starlette.websockets import WebSocketDisconnect
 
 LOG_LEVEL = os.environ.get("SPACENAV_WS_LOG_LEVEL", "INFO").upper()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_SRC_DIR = PROJECT_ROOT / "src"
 
 # TODO: This handler isn't used for the uvicorn logs and I can't be bothered finding the magic logging incantations to make it so.
 logging.basicConfig(level=LOG_LEVEL, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
@@ -99,9 +102,14 @@ async def bridge_websocket(ws: WebSocket):
     remap = os.environ.get("SPACENAV_WS_REMAP", DEFAULT_REMAP)
     controller = await create_mouse_controller(wamp_session, spacenav_reader, nav_config=NavigationConfig(remap=remap))
     # TODO, better error handling then just dropping the websocket disconnect on the floor?
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(controller.start_mouse_event_stream(), name="mouse")
-        tg.create_task(controller.session.start_wamp_message_stream(), name="wamp")
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(controller.start_mouse_event_stream(), name="mouse")
+            tg.create_task(controller.session.start_wamp_message_stream(), name="wamp")
+    except* WebSocketDisconnect:
+        logging.info("Browser client disconnected")
+    except* asyncio.IncompleteReadError:
+        logging.info("spacenav stream ended")
 
 
 @cli.command()
@@ -134,6 +142,7 @@ def serve(
         ssl_keyfile=resolved_key_file,
         log_level=LOG_LEVEL.lower(),
         reload=hot_reload,
+        reload_dirs=[str(PROJECT_SRC_DIR)] if hot_reload else None,
     )
 
 

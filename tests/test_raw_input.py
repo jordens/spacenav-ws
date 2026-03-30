@@ -1,7 +1,9 @@
+import asyncio
 import struct
 
 import pytest
 
+from spacenav_ws import raw_input
 from spacenav_ws.raw_input import PACKET_FORMAT, PACKET_SIZE, decode_packet
 from spacenav_ws.types import ButtonSample, MotionSample
 
@@ -26,3 +28,20 @@ def test_decode_button_packet():
 def test_decode_packet_rejects_wrong_size():
     with pytest.raises(ValueError):
         decode_packet(b"\x00" * (PACKET_SIZE - 1))
+
+
+def test_open_spacenav_connection_uses_current_env_override(monkeypatch):
+    seen = {}
+
+    async def fake_open_unix_connection(path):
+        seen["path"] = path
+        return object(), object()
+
+    monkeypatch.setenv(raw_input.SPACENAV_SOCKET_PATH_ENV, "/tmp/test-spnav.sock")
+    monkeypatch.setattr(raw_input.asyncio, "open_unix_connection", fake_open_unix_connection)
+
+    reader, writer = asyncio.run(raw_input.open_spacenav_connection())
+
+    assert seen["path"] == "/tmp/test-spnav.sock"
+    assert reader is not None
+    assert writer is not None
