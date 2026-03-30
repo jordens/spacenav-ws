@@ -1,124 +1,101 @@
-# Onshape Interface Specification
+# Onshape Bridge Specification
 
-This document is the normative reference for how `spacenav-ws` interprets and
-updates the Onshape 3Dconnexion bridge.
-
-Everything below is grounded in live inspection of the current Onshape browser
-session and direct page-side experiments.
+Normative interface notes for the page-side 3Dconnexion bridge used by
+`spacenav-ws`.
 
 ## Scope
 
-This specification covers only the geometry and navigation interface exposed by
-Onshape's page-side 3Dconnexion bridge:
-
-- view state
-- pivot state
-- pan / rotate / zoom semantics
-- orthographic vs perspective differences
-- redraw / motion lifecycle hooks
-
-It does not specify:
-
-- exact raw SpaceMouse axis/sign policy
-- adapter-side button policy
-- WAMP protocol details beyond the properties and commands actually used here
-
-## Exposed Read Properties
-
-The live bridge exposes at least these read properties:
+Specified here:
 
 - `view.affine`
-- `view.extents`
-- `view.fov`
-- `view.frustum`
 - `view.perspective`
-- `view.target`
-- `model.extents`
+- `view.extents`
+- `view.frustum`
 - `pivot.position`
-- `hit.lookat`
+- redraw / motion lifecycle hooks actually used by the adapter
+
+Not specified here:
+
+- raw SpaceMouse remap policy
+- adapter button policy
+- general WAMP behavior outside the properties and commands used here
+
+## Required Read Properties
+
+- `view.affine`
+- `view.perspective`
+- `view.extents`
+- `view.frustum`
+- `pivot.position`
+
+Optional fallback reads used when `pivot.position` is absent:
+
 - `selection.extents`
-- `views.front`
-
-For exact SpaceMouse navigation, the required properties are:
-
-- `view.affine`
-- `view.perspective`
-- `view.extents`
-- `view.frustum`
-- `pivot.position`
+- `model.extents`
 
 ## `view.affine`
 
-`view.affine` is exactly `camera.getFrame()`.
+`view.affine` is `camera.getFrame()`.
 
-Its value is a flat 16-element column-major matrix:
+It is a flat 16-element column-major matrix:
 
-`M = [ r  u  -f  e ]`
+`M = [r u -f e]`
 
 where:
 
-- `r` is camera right in world coordinates
-- `u` is camera up in world coordinates
-- `f` is camera forward in world coordinates
-- `e` is camera eye position in world coordinates
+- `r`: camera right in world coordinates
+- `u`: camera up in world coordinates
+- `f`: camera forward in world coordinates
+- `e`: camera eye position in world coordinates
 
-Equivalent matrix form:
+Equivalent column layout:
 
-- column 0 = `r`
-- column 1 = `u`
-- column 2 = `-f`
-- column 3 = `e`
+- column `0` = `r`
+- column `1` = `u`
+- column `2` = `-f`
+- column `3` = `e`
 
-The homogeneous last row is `[0 0 0 1]`.
-
-The adapter must:
+Adapter requirements:
 
 - read `view.affine` as column-major
-- treat it as the camera pose
-- write the updated camera pose back in the same column-major format
+- treat it as the full camera pose
+- write updated camera state back in the same format
 
 ## `view.perspective`
 
-`view.perspective` is the camera-mode discriminator:
+Mode bit:
 
 - `true`: perspective
 - `false`: orthographic
 
-This bit determines whether zoom is rigid camera motion or extent scaling.
+This determines whether z-zoom is dolly or extent scaling.
 
 ## `view.extents`
 
-In orthographic mode:
+Orthographic extents:
 
-`view.extents = [left, bottom, -far, right, top, -near]`
+`[left, bottom, -far, right, top, -near]`
 
-Onshape uses only:
+Only these entries are used for zoom state:
 
 - `left`
 - `right`
 - `bottom`
 - `top`
 
-for orthographic zoom and pan framing.
-
-The z entries are clip values, not zoom state.
-
-Therefore:
+Implications:
 
 - orthographic pan/rotation live in `view.affine`
 - orthographic zoom lives in `view.extents`
-- changing only `extents[2]` / `extents[5]` must not be used for zoom
+- `extents[2]` and `extents[5]` are clip values, not zoom state
 
 ## `view.frustum`
 
-In perspective mode:
+Perspective frustum:
 
-`view.frustum = [left, right, bottom, top, near, far]`
+`[left, right, bottom, top, near, far]`
 
-This is the exact near-plane frustum geometry of the active camera.
-
-It must be used to derive perspective screen-plane pan scale at a given pivot
-depth:
+Perspective pan scale at pivot depth `d`:
 
 `span_x(d) = (right - left) d / near`
 
@@ -126,132 +103,68 @@ depth:
 
 ## `pivot.position`
 
-`pivot.position` is the current Spaceball rotation/pan center.
+`pivot.position` is the active Spaceball pivot.
 
-It is produced by Onshape's own dynamic Spaceball pivot logic:
+Requirements:
 
-- it is not adapter policy
-- it is not a fixed origin
+- use it as the primary center of rotation
+- do not substitute `view.target`
+
+Observed behavior:
+
+- it is dynamic
+- it is not fixed at the origin
 - it is not generally equal to `view.target`
 
-The adapter must use `pivot.position` as the primary center-of-rotation input.
-
-`view.target` must not be treated as equivalent.
-
-## Auto Rotation Center
-
-Onshape's internal Spaceball pivot is dynamic.
-
-Its internal fallback chain is:
-
-1. bounds-based center if model bounds fit the viewport
-2. depth hit under the screen center
-3. depth-averaged samples without planes
-4. depth-averaged samples with planes
-5. center-screen ray plus bounds-depth fallback
-
-The adapter does not reimplement this logic.
-It consumes the exposed result through `pivot.position`.
-
-## Pan Semantics
-
-Onshape pan is screen-plane camera motion relative to the current pivot plane.
-
-For perspective:
-
-- pan scale depends on `view.frustum` and pivot depth
-- not merely on Euclidean eye-to-pivot distance
-
-For orthographic:
-
-- pan scale depends on `view.extents`
-
-Therefore the adapter must derive:
-
-- perspective pan from frustum spans at the pivot depth
-- orthographic pan from orthographic x/y extents
-
-## Zoom Semantics
-
-### Orthographic
-
-Onshape's orthographic zoom law is:
-
-`scale = 2^(-delta / 6)`
-
-and this rescales only:
-
-- `left`
-- `right`
-- `bottom`
-- `top`
-
-So orthographic zoom is 2D extent scaling, not rigid camera motion.
-
-### Perspective
-
-Onshape's perspective zoom law is dolly:
-
-`dolly = distance * delta / 6`
-
-where `distance` is the current distance to the pivot/center, subject to
-Onshape's own internal minimum-distance floor.
-
-So perspective zoom must be modeled as camera motion in `view.affine`, not as
-FOV change.
-
-## Navigation Modes
+## Navigation Semantics
 
 ### Object Mode
 
 Object mode is inverse camera motion about `pivot.position`.
 
-The adapter must update the camera so that the object appears to undergo the
-requested rigid transform around the pivot.
-
 ### Target-Camera Mode
 
 Target-camera mode is direct camera motion about `pivot.position`.
 
-The adapter must:
+Rules:
 
-- rotate the camera about the pivot
-- translate the camera directly in the current camera frame
-- still use orthographic extent scaling for orthographic z-zoom
+- rotate about the pivot
+- translate in the current camera frame
+- in orthographic mode, z-zoom still uses extent scaling
 
-### Not Specified Here
+## Zoom Semantics
 
-Pure fly/camera-eye mode is not part of the current public mode cycle and is
-not part of this interface specification.
+### Perspective
 
-## Redraw And Motion Lifecycle
+Perspective zoom is dolly:
 
-The adapter currently relies on two non-geometric hooks:
+`dolly = distance * delta / 6`
+
+### Orthographic
+
+Orthographic zoom rescales x/y extents:
+
+`scale = 2^(-delta / 6)`
+
+It does not move the camera rigidly.
+
+## Lifecycle Hooks
+
+The adapter relies on:
 
 - `motion`
 - `transaction = 0`
 
-These are not geometric state, but they are required in practice:
+Operational requirement:
 
-- `motion` controls Onshape's internal Spaceball moving lifecycle
-- `transaction = 0` reliably triggers redraw after navigation updates
-
-So a geometrically correct update is not sufficient by itself.
-The adapter must also drive these lifecycle hooks.
+- set `motion` to follow active Spaceball motion state
+- write `transaction = 0` after navigation updates to force redraw
 
 ## Verified Equivalences
 
-Page-side experiments established the following equivalences:
+Page-side checks show that adapter updates match Onshape primitives for:
 
-- object-mode rotation matches `camera.rotateAbout(...)`
-- object-mode translation matches `camera.pan(...)`
-- orthographic zoom matches `OrthographicCamera.zoom(...)`
-- perspective zoom matches `PerspectiveCamera.dolly(...)`
-
-This means the remaining adapter choices are mainly:
-
-- raw device remap/sign policy
-- exact mode policy
-- lifecycle / transport behavior
-
-not the underlying Onshape camera geometry itself.
+- object rotation
+- object pan
+- orthographic zoom
+- perspective dolly

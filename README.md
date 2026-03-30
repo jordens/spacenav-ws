@@ -1,24 +1,15 @@
-# Websockets exposer for the spacenav driver (spacenav‑ws)
+# spacenav-ws
 
-![PyPI version](https://img.shields.io/pypi/v/spacenav-ws)
-![Build Status](https://github.com/rmstorm/spacenav-ws/workflows/Test/badge.svg)
-![License](https://img.shields.io/github/license/rmstorm/spacenav-ws)
+`spacenav-ws` exposes a local SpaceMouse to browser clients over TLS WebSocket.
+The current target is Onshape on Linux via `spacenavd`.
 
-## About
+## Requirements
 
-**spacenav‑ws** is a tiny Python CLI that exposes your 3Dconnexion SpaceMouse over a secure WebSocket, so Onshape on Linux can finally consume it. Under the hood it reverse‑engineers and re-implements the 3Dconnexion and Onshape interfaces.
-
-This lets you use [FreeSpacenav/spacenavd](https://github.com/FreeSpacenav/spacenavd) on Linux with Onshape.
-
-## Prerequisites
-
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) or a working repo-local `.venv`
-- a running instance of [spacenavd](https://github.com/FreeSpacenav/spacenavd)
-- a modern browser with a userscript manager (Tampermonkey/Greasemonkey)
+- `uv` or a repo-local `.venv`
+- running `spacenavd`
+- a browser with a userscript manager
 
 ## Quick Start
-
-1. Clone the repo, sync deps, generate the local cert, then start the server:
 
 ```bash
 git clone https://github.com/you/spacenav-ws.git
@@ -28,41 +19,51 @@ make certs HOST=127.51.68.120
 uv run spacenav-ws serve --hot-reload
 ```
 
-2. Open: [https://127.51.68.120:8181](https://127.51.68.120:8181) and trust the generated self-signed cert.
-   Check that there are events on that page when touching your spacemouse.
+Then:
 
-3. Install Tampermonkey and add the platform-spoof userscript from
-[`additional/onshape-3d-mouse-linux.user.js`](additional/onshape-3d-mouse-linux.user.js),
-then open an Onshape document.
+1. Open `https://127.51.68.120:8181` and trust the generated cert.
+2. Verify motion events appear when the SpaceMouse moves.
+3. Install [`additional/onshape-3d-mouse-linux.user.js`](additional/onshape-3d-mouse-linux.user.js).
+4. Open an Onshape document.
 
 ## Controls
 
-- mode button `0`: toggle `object` / `target-camera`
-- mode button `1`: cycle `all` -> `rotation-only` -> `translation-only` -> `all`
+- button `0`: toggle `object` / `target-camera`
+- button `1`: cycle `all` -> `rotation-only` -> `translation-only` -> `all`
 
-## Common Pitfalls
+## CLI
 
-- `spacenavd` should have a sensible dead-zone, but no extra gains/sensitivity scaling and no `bnact*` button actions
-- `make certs` is non-destructive and refuses to overwrite an existing cert/key pair
-- generated certs live under [`src/spacenav_ws/data/certs`](src/spacenav_ws/data/certs)
-- the raw remap is configuration, not a public standard
+Start the bridge:
 
-To override the raw-axis remap:
+```bash
+uv run spacenav-ws serve --hot-reload
+```
+
+Read raw SpaceMouse packets:
+
+```bash
+uv run spacenav-ws read-mouse
+```
+
+Override the raw-axis remap:
 
 ```bash
 uv run spacenav-ws serve --hot-reload --remap XYzUWV
 ```
 
-The remap string is six characters. The first three choose model translation
-`x y z`, the last three choose model rotation `u v w`, from the six raw axes
-`x y z u v w`. Uppercase means positive, lowercase means negative, and each of
-`x y z u v w` must appear exactly once.
+`remap` is six characters:
 
-To validate raw SpaceMouse input:
+- chars `1..3`: model translation `x y z`
+- chars `4..6`: model rotation `u v w`
+- uppercase: positive raw axis
+- lowercase: negative raw axis
+- `x y z u v w` must each appear exactly once
 
-```bash
-uv run spacenav-ws read-mouse
-```
+## Notes
+
+- generated certs live in [`src/spacenav_ws/data/certs`](src/spacenav_ws/data/certs)
+- `make certs` will not overwrite an existing cert/key pair
+- keep `spacenavd` dead-zone/button handling sane; avoid extra gain scaling and `bnact*` remaps
 
 ## Development
 
@@ -71,14 +72,7 @@ uv sync
 ./.venv/bin/python -m pytest -q
 ```
 
-Direct [`.venv`](.venv) usage also works for serving:
+## Reference
 
-```bash
-make certs HOST=127.51.68.120
-./.venv/bin/python -m spacenav_ws.main serve --hot-reload
-```
-
-Reference docs:
-
-- [docs/navigation-model.md](docs/navigation-model.md): mathematical model
-- [docs/onshape-observations.md](docs/onshape-observations.md): Onshape interface specification
+- [`docs/navigation-model.md`](docs/navigation-model.md): navigation math
+- [`docs/onshape-observations.md`](docs/onshape-observations.md): Onshape bridge contract

@@ -34,6 +34,26 @@ CERT_DIR = PACKAGE_DATA_DIR / "certs"
 cli = typer.Typer()
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["GET", "OPTIONS"], allow_headers=["*"])
+HOMEPAGE_HTML = """
+<html>
+    <body>
+        <h1>Mouse Stream</h1>
+        <p>Move your spacemouse and motion data should appear here!</p>
+        <pre id="output"></pre>
+        <script>
+            const evtSource = new EventSource("/events");
+            const maxLines = 30;
+            const lines = [];
+
+            evtSource.onmessage = function(event) {
+                lines.push(event.data);
+                if (lines.length > maxLines) {lines.shift()}
+                document.getElementById("output").textContent = lines.join("\\n");
+            };
+        </script>
+    </body>
+</html>
+"""
 
 
 @app.get("/3dconnexion/nlproxy")
@@ -45,41 +65,19 @@ async def get_info():
 @app.get("/")
 def homepage():
     """Tiny bit of HTML that displays mouse movement data"""
-    html = """
-    <html>
-        <body>
-            <h1>Mouse Stream</h1>
-            <p>Move your spacemouse and motion data should appear here!</p>
-            <pre id="output"></pre>
-            <script>
-                const evtSource = new EventSource("/events");
-                const maxLines = 30;
-                const lines = [];
-
-                evtSource.onmessage = function(event) {
-                    lines.push(event.data);
-                    if (lines.length > maxLines) {lines.shift()}
-                    document.getElementById("output").textContent = lines.join("\\n");
-                };
-            </script>
-        </body>
-    </html>
-    """
-    return HTMLResponse(content=html, status_code=200)
+    return HTMLResponse(content=HOMEPAGE_HTML, status_code=200)
 
 
-async def get_mouse_event_generator():
+async def get_mouse_event_stream():
     reader, _ = await get_async_spacenav_socket_reader()
     while True:
-        mouse_event = await reader.readexactly(PACKET_SIZE)
-        event_data = decode_packet(mouse_event)
-        yield f"data: {event_data}\n\n"  # <- SSE format
+        yield f"data: {decode_packet(await reader.readexactly(PACKET_SIZE))}\n\n"
 
 
 @app.get("/events")
 async def event_stream():
     """Stream mouse motion data"""
-    return StreamingResponse(get_mouse_event_generator(), media_type="text/event-stream")
+    return StreamingResponse(get_mouse_event_stream(), media_type="text/event-stream")
 
 
 @app.websocket("/")
@@ -126,7 +124,7 @@ def read_mouse():
 
     async def read_mouse_stream():
         logging.info("Start moving your mouse!")
-        async for event in get_mouse_event_generator():
+        async for event in get_mouse_event_stream():
             logging.info(event.strip())
 
     asyncio.run(read_mouse_stream())

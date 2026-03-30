@@ -1,198 +1,149 @@
 # Navigation Model
 
-This file is the reference for SpaceMouse-to-Onshape navigation math.
+Normative math for SpaceMouse input to Onshape camera updates.
 
-`dt` comes from upstream `spacenavd` / `libspnav` motion `period`, which is computed and transported in milliseconds.
+`dt = period_ms / 1000`, where `period_ms` comes from `spacenavd` / `libspnav`.
 
-## Raw Input
+## Input
 
-`spacenavd` provides a raw 6-axis input sample
+Raw device sample:
 
 `m = [tx, ty, tz, rx, ry, rz]^T`
 
-where translation and rotation components are device-frame input signals, not pose deltas.
-
-The adapter applies exactly one fixed signed-permutation map over all six raw
-channels:
+Adapter remap:
 
 `u = S m`
 
-where:
+where `S` is a signed permutation encoded by the six-character `remap` string.
 
-- `m = [tx, ty, tz, rx, ry, rz]^T`
-- `u = [u_tx, u_ty, u_tz, u_rx, u_ry, u_rz]^T`
+Default `remap = XYzUWV`:
 
-The current implementation exposes this as a six-character remap string such as
-`XYzUWV`, with:
+- translation channels: `x y z`
+- rotation channels: `u v w`
+- uppercase: positive raw axis
+- lowercase: negative raw axis
 
-- positions 1..3 mapping model translation `x y z`
-- positions 4..6 mapping model rotation `u v w`
-- uppercase meaning positive raw axis
-- lowercase meaning negative raw axis
-
-Then the current implementation applies one linear gain map:
+Rate model:
 
 `v_c = diag(k_pan, k_pan, k_zoom) [u_tx, u_ty, u_tz]^T`
 
 `ω_c = k_ang [u_rx, u_ry, u_rz]^T`
 
-The camera-frame basis is exactly Onshape's `view.affine` basis:
+Camera-frame axes:
 
-`(e_x, e_y, e_z) = (right, up, -forward)`
+- `+x`: screen right
+- `+y`: screen up
+- `+z`: `-forward`
 
-So the third model axis is the camera-frame backward axis, not the view direction itself.
-
-Current default raw SpaceMouse cap semantics (`XYzUWV`):
-
-- push away: `+tz`
-- push left: `-tx`
-- push up: `+ty`
-- tilt forward: `-rx`
-- tilt right: `+rz`
-- twist clockwise: `-ry`
+So positive zoom input means "object closer / camera forward", which is motion
+along `-z` in the camera frame.
 
 ## Camera Pose
 
-Onshape `view.affine` is the camera frame in flat column-major form
+Onshape `view.affine` is a flat 16-element column-major matrix:
 
-`M = [ r  u  -f  e ]`
+`M = [r u -f e]`
 
 where:
 
-- `r` is camera right in world coordinates
-- `u` is camera up in world coordinates
-- `f` is camera forward in world coordinates
-- `e` is camera eye position in world coordinates
+- `r`: camera right in world coordinates
+- `u`: camera up in world coordinates
+- `f`: camera forward in world coordinates
+- `e`: camera eye position in world coordinates
 
-Equivalently, if `R = [r u -f]`, then `R ∈ SO(3)` maps camera-frame vectors into world-frame vectors.
+Equivalently, `R = [r u -f]` is the world-from-camera rotation used by the adapter.
 
-The current Spaceball center of rotation is exposed separately as `pivot.position`.
-It is not, in general, the same as `view.target`.
+## Pivot Depth And Pan Scale
 
-For perspective cameras, Onshape `view.frustum` is
+Let `c` be the current pivot.
 
-`[left, right, bottom, top, near, far]`
+Pivot depth:
 
-and gives the exact near-plane view spans.
+`d = |f^T (c - e)|`
 
-## Object-Mode Motion
+Perspective frustum:
 
-Let `c` be the current center of rotation in world coordinates.
+`view.frustum = [left, right, bottom, top, near, far]`
 
-Let the current pivot depth along the view direction be
-
-`d = |f^T (c - e)|`.
-
-Then the exact world-space view spans at the pivot plane are:
-
-Perspective:
+Perspective screen spans at depth `d`:
 
 `span_x = (right - left) d / near`
 
 `span_y = (top - bottom) d / near`
 
-Orthographic:
+Orthographic spans:
 
 `span_x = right - left`
 
 `span_y = top - bottom`
 
-The adapter interprets x/y device translation as pan in units of screen spans
-per second, so the camera-frame translation increment is
+## Camera-Frame Increment
 
-`Δt_c = [span_x * α_x, span_y * α_y, δ_dolly]^T dt`
+Translation increment in camera coordinates:
 
-where `α_x, α_y` are the pan-rate channels from the raw device input.
+`Δt_c = [span_x α_x, span_y α_y, δ_dolly]^T dt`
 
-For timestep `dt`, define the incremental rotation
+Incremental camera-frame rotation:
 
 `ΔR_c = Exp(dt [ω_c]x)`
 
-in camera coordinates, and the world-space translation
+World-space translation:
 
-`Δt = R Δt_c`.
+`Δt = R Δt_c`
 
-The intended object motion is
+where `R = [r u -f]`.
 
-`x' = c + ΔR_w (x - c) + Δt`
+## Object Mode
 
-with
+Object mode applies the inverse camera transform about pivot `c`.
 
-`ΔR_w = R ΔR_c R^T`.
+World rotation:
 
-Because Onshape exposes the camera instead of the object, the camera receives the inverse transform:
+`ΔR_w = R ΔR_c R^T`
+
+Camera update:
 
 `R' = ΔR_w^T R = R ΔR_c^T`
 
 `e' = c + ΔR_w^T (e - c - Δt)`
 
-This is the exact object-mode update law used by the adapter.
+## Target-Camera Mode
 
-## Target-Camera Motion
+Target-camera mode applies direct camera motion about pivot `c`.
 
-Target-camera mode is direct camera motion about the current target/pivot.
-
-Using the same incremental camera-frame rotation `ΔR_c` and world translation
-`Δt = R Δt_c`, with world rotation `ΔR_w = R ΔR_c R^T`, the camera update is:
+Camera update:
 
 `R' = ΔR_w R = R ΔR_c`
 
 `e' = c + ΔR_w (e - c + Δt)`
 
-So:
+## Zoom
 
-- rotation is about the current target/pivot
-- x/y translation is camera motion in the current screen plane
-- perspective z translation is forward/back camera motion
-- orthographic z translation still maps to extent scaling, not rigid camera motion
+### Perspective
 
-## Orthographic Zoom
+Perspective zoom is dolly:
 
-In orthographic mode, zoom is not rigid motion.
+`δ_dolly = d δ / 6`
 
-Onshape `view.extents` is
+### Orthographic
 
-`[left, bottom, -far, right, top, -near]`
+Orthographic zoom rescales x/y extents about their center.
 
-and `setExtents()` only uses `left`, `right`, `bottom`, and `top`.
+`view.extents = [left, bottom, -far, right, top, -near]`
 
-So orthographic zoom keeps the center fixed and scales the x/y half-spans:
+Only `left`, `right`, `bottom`, and `top` participate in zoom.
 
-`cx = (left + right) / 2`
+Scale law:
 
-`cy = (bottom + top) / 2`
+`s = 2^{-δ/6}`
 
-`hx = (right - left) / 2`
-
-`hy = (top - bottom) / 2`
+Half-span update:
 
 `hx' = s hx`
 
 `hy' = s hy`
 
-`left' = cx - hx'`
+## Source Notes
 
-`right' = cx + hx'`
-
-`bottom' = cy - hy'`
-
-`top' = cy + hy'`
-
-The z entries of `view.extents` are clip values, not the orthographic zoom state.
-
-Onshape's own orthographic zoom law is
-
-`s = 2^{-δ/6}`
-
-where `δ` is the scalar zoom command.
-
-Perspective zoom is dolly with
-
-`δ_dolly = d δ / 6`
-
-using the same pivot depth `d`.
-
-## Sources
-
-- `spacenavd` computes motion `period` in milliseconds and writes it into AF_UNIX event field 7.
-- `libspnav` exposes that same field as `spnav_event_motion.period`.
+- `spacenavd` writes motion `period` in milliseconds.
+- `libspnav` exposes the same field as `spnav_event_motion.period`.

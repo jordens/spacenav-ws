@@ -22,8 +22,8 @@ class NavigationConfig:
     zoom_rate: float = 20 / log(2.0) / MAX_COUNT
     # Angular rates, in rad / second / raw device count.
     angular_rate: float = 5 / MAX_COUNT
-    # Signed raw-axis permutation. First 3 chars map model translation x/y/z
-    # from raw x/y/z, last 3 map model rotation u/v/w from raw u/v/w.
+    # Signed raw-axis permutation. First 3 chars map model translation x/y/z.
+    # Last 3 map model rotation u/v/w.
     # Uppercase = positive, lowercase = negative.
     remap: str = DEFAULT_REMAP
 
@@ -39,27 +39,8 @@ def parse_remap(remap: str) -> tuple[tuple[int, int], ...]:
 
 
 def remap_device_axes(sample: MotionSample, remap: str = DEFAULT_REMAP) -> tuple[np.ndarray, np.ndarray]:
-    # spacenavd/libspnav exposes raw device axes. Keep that interface untouched
-    # and perform any client-specific remapping exactly once here.
-    #
-    # Desired behavior:
-    #   device left/right      -> screen-horizontal translation
-    #   device up/down         -> screen-vertical translation
-    #   device forward/back    -> dolly
-    #   device tilt x/y        -> camera-local object rotation about screen axes
-    #   device twist           -> camera-local roll / screen-normal rotation
-    # Raw device semantics, from measured cap motion:
-    #   push away      -> +tz
-    #   push left      -> -tx  (so +tx is cap-right)
-    #   push up        -> +ty
-    #   tilt forward   -> -rx
-    #   tilt right     -> +rz
-    #   twist clockwise-> -ry
-    #
-    # Model semantics:
-    #   +x pan = object right on screen
-    #   +y pan = object up on screen
-    #   +z zoom = object closer / camera forward
+    # Keep spacenavd/libspnav raw semantics untouched and apply the one adapter
+    # remap here.
     raw = np.array([sample.tx, sample.ty, sample.tz, sample.rx, sample.ry, sample.rz], dtype=float)
     parsed = parse_remap(remap)
     remapped = np.array([sign * raw[index] for index, sign in parsed], dtype=float)
